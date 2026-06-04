@@ -1,0 +1,9 @@
+{
+  "name": "p2pc",
+  "version": "1.0.0",
+  "dependencies": [
+    "qt",
+    "ffmpeg",
+    "webrtc"
+  ]
+}
