@@ -24,6 +24,8 @@ export default function SessionView() {
   const [bitrate, setBitrate] = useState(48.5); // Mbps
   const [showDiagnostics, setShowDiagnostics] = useState(true);
   const [streamStarted, setStreamStarted] = useState(false);
+  const [fallbackFrameUrl, setFallbackFrameUrl] = useState<string | null>(null);
+  const [playerCursor, setPlayerCursor] = useState<{ xRatio: number; yRatio: number } | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
@@ -126,6 +128,17 @@ export default function SessionView() {
         } else if (data.type === 'INPUT_EVENT') {
           // Route fallback inputs immediately to state machine processing parser
           processIncomingMessage(data.payload);
+          // If receiving user is host, update virtual player mouse indicator coordinates
+          if (user?.role === 'host' && data.payload && typeof data.payload === 'object') {
+            const ev = data.payload;
+            if (ev.xRatio !== undefined && ev.yRatio !== undefined) {
+              setPlayerCursor({ xRatio: ev.xRatio, yRatio: ev.yRatio });
+            }
+          }
+        } else if (data.type === 'SCREEN_FRAME') {
+          if (user?.role === 'player') {
+            setFallbackFrameUrl(data.payload);
+          }
         }
       } catch (err) {
         console.error('Error parsing ws msg:', err);
@@ -192,6 +205,40 @@ export default function SessionView() {
       await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
     }
   };
+
+  // Periodic fallback screen stream capture over WebSocket Signaling relay
+  useEffect(() => {
+    if (user?.role !== 'host' || !streamStarted) return;
+
+    const intervalId = setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || video.paused) return;
+
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 854; // Lightweight resolution (480p standard wide)
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          // High-performance high-speed compression
+          const frameUrl = canvas.toDataURL('image/jpeg', 0.5);
+          
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && sessionRef.current) {
+            wsRef.current.send(JSON.stringify({
+              type: 'SCREEN_FRAME',
+              targetId: sessionRef.current.player_id,
+              payload: frameUrl
+            }));
+          }
+        }
+      } catch (err) {
+        console.warn('Fallback screen frame stream capture warning:', err);
+      }
+    }, 150); // ~6.6 FPS: extremely reliable, responsive and lightweight over standard networks
+
+    return () => clearInterval(intervalId);
+  }, [user, streamStarted]);
 
   const startScreenShare = async () => {
     try {
@@ -370,8 +417,32 @@ export default function SessionView() {
                   style={{ display: streamStarted ? 'block' : 'none' }}
                 />
 
+                {/* Secure High-Fidelity WebSocket Fallback Screen Stream (Displays if WebRTC fails to secure stream) */}
+                {!streamStarted && fallbackFrameUrl && (
+                  <img
+                    src={fallbackFrameUrl}
+                    alt="Remote Host Screen (Fallback Active)"
+                    className="absolute inset-0 w-full h-full object-contain z-[4]"
+                  />
+                )}
+
+                {/* Player's virtual cursor overlay (Only on Host's viewport to monitor Player moves) */}
+                {user?.role === 'host' && playerCursor && (
+                  <div 
+                    className="absolute w-3.5 h-3.5 bg-rose-500 rounded-full border border-white shadow-[0_0_8px_rgba(244,63,94,0.85)] z-30 pointer-events-none -translate-x-1/2 -translate-y-1/2 transition-all duration-75"
+                    style={{
+                      left: `${playerCursor.xRatio * 100}%`,
+                      top: `${playerCursor.yRatio * 100}%`
+                    }}
+                  >
+                    <span className="absolute left-4 top-0 bg-rose-600/95 text-white text-[8px] font-mono px-1.5 py-0.5 rounded shadow max-w-[100px] truncate leading-none uppercase font-bold tracking-wider">
+                      {session?.player_username || 'Player'}
+                    </span>
+                  </div>
+                )}
+
                 {/* Empty State / Standby Info */}
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-10" style={{ display: streamStarted ? 'none' : 'block' }}>
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-10" style={{ display: (streamStarted || fallbackFrameUrl) ? 'none' : 'block' }}>
                   <Gamepad2 className="w-16 h-16 text-indigo-500/20 animate-pulse mx-auto mb-3" />
                   <p className="text-xs font-mono tracking-widest uppercase font-bold text-slate-500">
                     {user?.role === 'host' ? 'Awaiting Screen Broadcast Activation' : 'Standby: Requesting Host WebRTC video stream...'}

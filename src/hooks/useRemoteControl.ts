@@ -105,10 +105,7 @@ export function useRemoteControl(role: 'host' | 'player', wsSendMessage?: (paylo
 
     // Fallback to WebSocket multiplexer if data channel isn't ready
     if (!sentViaRTC && wsSendMessage) {
-      wsSendMessage({
-        type: 'INPUT_EVENT',
-        payload: fullEvent
-      });
+      wsSendMessage(fullEvent);
     }
 
     // Keep active keys in local sync if player is active
