@@ -28,17 +28,37 @@ export function useRemoteControl(role: 'host' | 'player', wsSendMessage?: (paylo
 
       if (event.type === 'keydown' && event.code) {
         setActiveKeys((prev) => ({ ...prev, [event.code!]: true }));
+        if (role === 'host') {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: event.key, code: event.code, bubbles: true }));
+        }
       } else if (event.type === 'keyup' && event.code) {
         setActiveKeys((prev) => {
           const updated = { ...prev };
           delete updated[event.code!];
           return updated;
         });
+        if (role === 'host') {
+          document.dispatchEvent(new KeyboardEvent('keyup', { key: event.key, code: event.code, bubbles: true }));
+        }
+      } else if (role === 'host' && (event.type === 'mousedown' || event.type === 'mouseup' || event.type === 'mousemove')) {
+        // Synthesize simulated mouse events on the host's viewport so browser web UI responds
+        const viewport = document.getElementById('gp-viewport');
+        if (viewport && event.xRatio !== undefined && event.yRatio !== undefined) {
+          const rect = viewport.getBoundingClientRect();
+          const clientX = rect.left + (event.xRatio * rect.width);
+          const clientY = rect.top + (event.yRatio * rect.height);
+          viewport.dispatchEvent(new MouseEvent(event.type, {
+            bubbles: true,
+            clientX,
+            clientY,
+            button: event.button || 0
+          }));
+        }
       }
     } catch (err) {
       console.error('Error parsing DataChannel remote event:', err);
     }
-  }, []);
+  }, [role]);
 
   // Set up data channel on a given peer connection
   const setupDataChannel = useCallback((pc: RTCPeerConnection) => {

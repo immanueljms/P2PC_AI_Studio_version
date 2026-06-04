@@ -371,12 +371,14 @@ export default function SessionView() {
               <span>{showDiagnostics ? 'Hide Overlay' : 'Reveal Overlay'}</span>
             </button>
 
-            <button
-              onClick={() => navigate(user?.role === 'host' ? '/host' : '/player')}
-              className="bg-slate-900 border border-slate-850 hover:bg-slate-800 text-xs px-3.5 py-1.5 rounded-xl text-slate-300 font-semibold transition"
+            <a
+              href={user?.role === 'host' ? '/host' : '/player'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bg-slate-900 border border-slate-850 hover:bg-slate-800 text-xs px-3.5 py-1.5 rounded-xl text-slate-300 font-semibold transition flex items-center justify-center"
             >
-              Dashboard
-            </button>
+              Dashboard (New Tab)
+            </a>
           </div>
         </div>
 
@@ -413,6 +415,7 @@ export default function SessionView() {
                   ref={videoRef} 
                   autoPlay 
                   playsInline 
+                  muted
                   className="absolute inset-0 w-full h-full object-contain z-[5]"
                   style={{ display: streamStarted ? 'block' : 'none' }}
                 />
