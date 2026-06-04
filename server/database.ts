@@ -2,8 +2,8 @@ import { createClient } from '@libsql/client';
 
 export interface Database {
   run(sql: string, params?: any[]): Promise<{ lastID?: number; changes?: number }>;
-  get<T>(sql: string, params?: any[]): Promise<T | undefined>;
-  all<T>(sql: string, params?: any[]): Promise<T[]>;
+  get<T = any>(sql: string, params?: any[]): Promise<T | undefined>;
+  all<T = any>(sql: string, params?: any[]): Promise<T[]>;
   exec(sql: string): Promise<void>;
 }
 

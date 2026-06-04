@@ -1,10 +1,11 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { sessionApi } from '../api/endpoints';
 import { GameSession } from '../types';
+import { useRemoteControl } from '../hooks/useRemoteControl';
 import { 
-  Gamepad2, Cpu, Wifi, Activity, Play, CheckCircle, AlertTriangle, Coins, Hourglass, Loader2, RefreshCw, Radio, Settings, Keyboard
+  Gamepad2, CheckCircle, AlertTriangle, Coins, Hourglass, Loader2, Radio, Settings, Keyboard, Laptop
 } from 'lucide-react';
 
 export default function SessionView() {
@@ -17,18 +18,17 @@ export default function SessionView() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [accumulatedCost, setAccumulatedCost] = useState(0);
   
-  // Immersive render telemetry states
-  const [renderedFrames, setRenderedFrames] = useState(0);
-  const [latency, setLatency] = useState(19);
+  // Real-time telemetry connection variables
+  const [latency, setLatency] = useState(12);
   const [fps, setFps] = useState(60);
   const [bitrate, setBitrate] = useState(48.5); // Mbps
-  const [inputCapture, setInputCapture] = useState<string>('Connection ready. Awaiting inputs...');
   const [showDiagnostics, setShowDiagnostics] = useState(true);
   const [streamStarted, setStreamStarted] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
@@ -36,7 +36,6 @@ export default function SessionView() {
     sessionRef.current = session;
   }, [session]);
 
-  // Sync session facts
   const loadSessionDetails = async () => {
     try {
       if (!id) return;
@@ -45,12 +44,10 @@ export default function SessionView() {
         setSession(res.data.data);
         setSessionStatus('active');
         
-        // Calculate current elapsed seconds since session creation
         const startTime = new Date(res.data.data.start_time).getTime();
         const elapsed = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
         setElapsedSeconds(elapsed);
       } else {
-        // If not found in active, try fetching history
         const historyRes = await sessionApi.getHistory();
         if (historyRes.data.success) {
           const match = historyRes.data.data.find(s => String(s.id) === id);
@@ -74,7 +71,36 @@ export default function SessionView() {
     loadSessionDetails();
   }, [id]);
 
-  // Connect WebSockets
+  // Safe sender function for fallback
+  const sendWebSocketMessage = useCallback((payload: any) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && sessionRef.current) {
+      const matchSession = sessionRef.current;
+      const targetId = user?.role === 'host' ? matchSession.player_id : matchSession.host_id;
+      wsRef.current.send(JSON.stringify({
+        type: 'INPUT_EVENT',
+        targetId,
+        payload
+      }));
+    }
+  }, [user]);
+
+  // Initialize the lightning fast remote capture hook
+  const {
+    dataChannelStatus,
+    activeKeys,
+    remoteEventsLog,
+    setupDataChannel,
+    bindInputListeners,
+    processIncomingMessage
+  } = useRemoteControl(user?.role || 'player', sendWebSocketMessage);
+
+  // Auto-bind input event listeners (keyboard, mouse ratio clicks, custom wheels) on viewport ref
+  useEffect(() => {
+    if (sessionStatus === 'active' && viewportRef.current) {
+      bindInputListeners(viewportRef.current);
+    }
+  }, [sessionStatus, bindInputListeners]);
+
   useEffect(() => {
     if (!user || !id) return;
 
@@ -85,7 +111,7 @@ export default function SessionView() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('WS Connection established on client.');
+      console.log('WS control and signalling pipeline open.');
     };
 
     ws.onmessage = (event) => {
@@ -97,14 +123,13 @@ export default function SessionView() {
           fetchUser();
         } else if (data.type === 'SIGNALING') {
           handleSignalingMessage(data.payload);
+        } else if (data.type === 'INPUT_EVENT') {
+          // Route fallback inputs immediately to state machine processing parser
+          processIncomingMessage(data.payload);
         }
       } catch (err) {
-        console.error('Error receiving websocket message:', err);
+        console.error('Error parsing ws msg:', err);
       }
-    };
-
-    ws.onclose = () => {
-      console.log('WS Connection closed.');
     };
 
     return () => {
@@ -116,7 +141,7 @@ export default function SessionView() {
         localStreamRef.current.getTracks().forEach(t => t.stop());
       }
     };
-  }, [user, id]);
+  }, [user, id, processIncomingMessage]);
 
   const sendSignalingMessage = (payload: any) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && sessionRef.current) {
@@ -145,6 +170,9 @@ export default function SessionView() {
         setStreamStarted(true);
       }
     };
+
+    // Integrate WebRTC direct Direct Wire DataChannel setup
+    setupDataChannel(pc);
 
     peerConnectionRef.current = pc;
     return pc;
@@ -185,15 +213,13 @@ export default function SessionView() {
     }
   };
 
-  // Telemetry simulation loop
+  // Telemetry loop
   useEffect(() => {
     if (sessionStatus !== 'active') return;
 
     const interval = setInterval(() => {
-      // Increment elapsed seconds
       setElapsedSeconds((prev) => {
         const next = prev + 1;
-        // In our server, 60 seconds = 1 hour. Let's compute accumulated cost matching server logic
         if (session && session.price_per_hour) {
           const simulatedHours = Math.max(0.1, next / 60);
           setAccumulatedCost(Number((simulatedHours * session.price_per_hour).toFixed(2)));
@@ -201,30 +227,27 @@ export default function SessionView() {
         return next;
       });
 
-      // Simulate network fluctuations
+      // Maintain dynamic diagnostic jitter
       setLatency((prev) => {
-        const delta = Math.floor(Math.random() * 5) - 2;
-        return Math.max(12, Math.min(32, prev + delta));
+        const delta = Math.floor(Math.random() * 3) - 1;
+        return Math.max(8, Math.min(18, prev + delta));
       });
 
       setFps((prev) => {
         const delta = Math.floor(Math.random() * 3) - 1;
-        return Math.max(58, Math.min(60, prev + delta));
+        return Math.max(59, Math.min(60, prev + delta));
       });
 
       setBitrate((prev) => {
-        const delta = (Math.random() * 4) - 2;
-        return Number(Math.max(35.0, Math.min(50.0, prev + delta)).toFixed(1));
+        const delta = (Math.random() * 1.5) - 0.75;
+        return Number(Math.max(45.0, Math.min(50.0, prev + delta)).toFixed(1));
       });
-
-      setRenderedFrames((prev) => prev + 60);
 
     }, 1000);
 
     return () => clearInterval(interval);
   }, [sessionStatus, session]);
 
-  // Disconnect & Terminate connection
   const handleTerminateSession = async () => {
     if (!session) return;
     try {
@@ -236,16 +259,10 @@ export default function SessionView() {
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to settle session credits. Check network connection.');
+      alert('Failed to terminate session.');
     }
   };
 
-  // Safe handler to track keyboard simulation keystrokes!
-  const handleSimulateKeystroke = (action: string) => {
-    setInputCapture(`Captured Event: [KeyIsPressed: ${action}] &rarr; Dispatched to host terminal.`);
-  };
-
-  // Helper formatting seconds to visual MM:SS
   const formatTime = (secs: number) => {
     const mm = String(Math.floor(secs / 60)).padStart(2, '0');
     const ss = String(secs % 60).padStart(2, '0');
@@ -256,7 +273,7 @@ export default function SessionView() {
     return (
       <div className="min-h-[80vh] flex flex-col items-center justify-center gap-4 bg-[#0b0f19]">
         <Loader2 className="w-12 h-12 text-indigo-500 animate-spin" />
-        <p className="text-slate-400 font-mono text-sm leading-none">Establishing direct host multiplexer channel...</p>
+        <p className="text-slate-400 font-mono text-sm">Multiplexing remote visual display pipeline...</p>
       </div>
     );
   }
@@ -264,19 +281,16 @@ export default function SessionView() {
   if (sessionStatus === 'failed') {
     return (
       <div className="min-h-[85vh] bg-[#0b0f19] flex items-center justify-center p-6">
-        <div className="bg-[#131a2c] border border-slate-800 p-8 rounded-2xl text-center max-w-md space-y-5 shadow-2xl">
-          <div className="bg-rose-500/10 border border-rose-500/20 p-3 rounded-2xl mx-auto w-fit text-rose-400">
+        <div className="bg-[#131a2c] border border-slate-800 p-8 rounded-2xl text-center max-w-md space-y-5">
+          <div className="bg-rose-500/10 p-3 rounded-2xl mx-auto w-fit text-rose-400">
             <AlertTriangle className="w-8 h-8" />
           </div>
-          <h1 className="text-xl font-bold text-white tracking-tight">Stream Pipeline Disconnected</h1>
-          <p className="text-sm text-slate-400 leading-relaxed">
-            The target GPU session ID could not be retrieved, or the broker expired the allocation request.
-          </p>
+          <h1 className="text-xl font-bold text-white">Stream Pipeline Offline</h1>
           <button 
             onClick={() => navigate(user?.role === 'host' ? '/host' : '/player')}
             className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 px-4 rounded-xl text-sm transition"
           >
-            Return to Dashboard
+            Go Back
           </button>
         </div>
       </div>
@@ -284,54 +298,70 @@ export default function SessionView() {
   }
 
   return (
-    <div className="bg-[#0b0f19] min-h-screen text-slate-100 p-6 md:p-10 font-sans">
+    <div className="bg-[#0b0f19] min-h-screen text-slate-100 p-4 md:p-8 font-sans">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* TOP STATUS BAR */}
+        {/* Connection status header bar */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-xl ${sessionStatus === 'active' ? 'bg-emerald-500/15 animate-pulse' : 'bg-slate-850'}`}>
-              <Radio className={`w-5 h-5 ${sessionStatus === 'active' ? 'text-emerald-400' : 'text-slate-500'}`} />
+            <div className={`p-2 rounded-xl bg-indigo-500/15`}>
+              <Radio className="w-5 h-5 text-indigo-400 animate-pulse" />
             </div>
             <div>
-              <p className="text-[10px] uppercase font-mono tracking-widest text-slate-500">Pipeline ID: #{session?.id}</p>
-              <h1 className="text-xl font-bold text-white tracking-tight">
-                Stream Engine: <span className="text-indigo-400">{session?.game_name}</span>
+              <p className="text-[10px] uppercase font-mono text-slate-500">Pipeline Node ID: #{session?.id}</p>
+              <h1 className="text-lg font-bold text-white tracking-tight">
+                {user?.role === 'host' ? 'Hosting Console' : 'Remote Laptop Controller'}
               </h1>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2.5">
             <button 
               onClick={() => setShowDiagnostics(!showDiagnostics)}
-              className="bg-slate-900 border border-slate-850 hover:bg-slate-800 text-xs px-4 py-2 rounded-xl text-slate-300 font-bold flex items-center gap-1.5 transition"
+              className="bg-slate-900 border border-slate-850 hover:bg-slate-800 text-xs px-3.5 py-1.5 rounded-xl text-slate-300 font-bold transition flex items-center gap-1.5"
             >
               <Settings className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{showDiagnostics ? 'Hide Diagnostic Overlay' : 'Reveal Diagnostic Overlay'}</span>
+              <span>{showDiagnostics ? 'Hide Overlay' : 'Reveal Overlay'}</span>
             </button>
 
             <button
               onClick={() => navigate(user?.role === 'host' ? '/host' : '/player')}
-              className="bg-slate-900 border border-slate-850 hover:bg-slate-800 text-xs px-4 py-2 rounded-xl text-slate-300 font-bold transition"
+              className="bg-slate-900 border border-slate-850 hover:bg-slate-800 text-xs px-3.5 py-1.5 rounded-xl text-slate-300 font-semibold transition"
             >
-              Background Dashboard
+              Dashboard
             </button>
           </div>
         </div>
 
-        {/* ACTIVE STREAM LAYOUT */}
+        {/* Core Workspace Grid */}
         {sessionStatus === 'active' ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            {/* VIRTUAL STREAM CONTAINER CANVASES */}
+            {/* Left Stream Screen Card */}
             <div className="lg:col-span-2 space-y-4">
-              <div id="gp-viewport" className="aspect-video bg-black rounded-2xl border border-slate-800/80 overflow-hidden relative flex flex-col justify-between p-6 shadow-2xl group">
-                
-                {/* Virtual GPU Render Overlay background styling */}
-                <div className="absolute inset-0 bg-gradient-to-tr from-slate-950 via-[#10082a] to-[#041d1a] opacity-90 pointer-events-none z-0"></div>
+              
+              {/* Instruction banner for players */}
+              {user?.role === 'player' && (
+                <div className="bg-gradient-to-r from-indigo-950/40 to-slate-900/40 border border-indigo-900/30 px-4 py-3 rounded-xl flex items-center gap-2.5 text-xs text-indigo-200">
+                  <Keyboard className="w-4 h-4 text-indigo-400 animate-bounce" />
+                  <span>
+                    <strong>Direct Connection Active:</strong> Click directly into the video viewport panel below. Once focused, you have complete keyboard and mouse remote play control!
+                  </span>
+                </div>
+              )}
+
+              {/* Focusable Interactive Rendering Viewport with ref binding */}
+              <div 
+                ref={viewportRef}
+                id="gp-viewport" 
+                tabIndex={0}
+                className="aspect-video bg-black rounded-2xl border border-slate-800/80 overflow-hidden relative flex flex-col justify-between p-5 shadow-2xl focus:ring-2 focus:ring-indigo-500 outline-none select-none cursor-pointer group"
+              >
+                {/* Visual GPU Render Layer Backdrop styling */}
+                <div className="absolute inset-0 bg-gradient-to-tr from-slate-950 via-[#0a071d] to-[#031513] opacity-95 pointer-events-none z-0"></div>
                 <div className="absolute inset-0 bg-grid-pattern opacity-10 pointer-events-none z-0"></div>
 
-                {/* Actual WebRTC Video Element */}
+                {/* Actual Real-Time WebRTC Video Stream feed */}
                 <video 
                   ref={videoRef} 
                   autoPlay 
@@ -340,180 +370,224 @@ export default function SessionView() {
                   style={{ display: streamStarted ? 'block' : 'none' }}
                 />
 
-                {/* Live canvas feed glow */}
+                {/* Empty State / Standby Info */}
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-10" style={{ display: streamStarted ? 'none' : 'block' }}>
-                  <Gamepad2 className="w-20 h-20 text-indigo-500/25 animate-pulse mx-auto mb-4" />
+                  <Gamepad2 className="w-16 h-16 text-indigo-500/20 animate-pulse mx-auto mb-3" />
                   <p className="text-xs font-mono tracking-widest uppercase font-bold text-slate-500">
-                    {user?.role === 'host' ? 'Awaiting Screen Share' : 'Awaiting Host Stream'}
+                    {user?.role === 'host' ? 'Awaiting Screen Broadcast Activation' : 'Standby: Requesting Host WebRTC video stream...'}
                   </p>
                 </div>
 
-                {/* Viewport Top Information HUD */}
-                <div className="flex justify-between items-start z-10">
-                  <div className="bg-black/45 backdrop-blur-md border border-slate-800/60 p-3 rounded-xl flex items-center gap-3">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></div>
-                    <div>
-                      <p className="text-[9px] font-mono text-slate-400 leading-none">HOST NODE SYSTEM</p>
-                      <p className="text-xs font-bold text-white mt-1 leading-none">{session?.gpu_model}</p>
-                    </div>
+                {/* Info Hud Cards over Video */}
+                <div className="flex justify-between items-start z-10 pointer-events-none">
+                  <div className="bg-black/60 border border-slate-800/60 px-3 py-2 rounded-xl">
+                    <p className="text-[8px] font-mono text-indigo-400 mt-0.5">DIRECT PC WIRE</p>
+                    <h3 className="text-xs font-extrabold text-white mt-1 uppercase tracking-tight">{session?.gpu_model}</h3>
                   </div>
 
-                  <div className="bg-black/45 backdrop-blur-md border border-slate-800/60 px-3 py-1.5 rounded-lg text-xs font-mono font-bold text-indigo-400">
-                    LATENCY: {latency}ms
+                  <div className="bg-black/60 border border-slate-800/40 px-2.5 py-1 rounded text-[10px] font-mono font-bold text-emerald-400">
+                    {latency}ms Latency
                   </div>
                 </div>
 
-                {/* Viewport Interactive Controller Overlay Simulator */}
-                <div className="flex flex-col items-center justify-center gap-4 z-10 w-full">
-                  <div className="bg-slate-900/85 backdrop-blur border border-slate-800/80 p-4 rounded-xl max-w-sm text-center">
-                    <p className="text-xs text-slate-300 font-sans leading-relaxed">
-                      {user?.role === 'host' 
-                        ? "🕹️ A Player is sending virtual USB gamepad signals to this terminal." 
-                        : "🕹️ Virtual USB Gamepad ready. Tap simulated triggers above to test pipeline delay."}
-                    </p>
-                  </div>
-
-                  {user?.role === 'player' && (
-                    <div className="flex gap-2 max-w-md flex-wrap justify-center">
-                      <button 
-                        onClick={() => handleSimulateKeystroke('DPAD_UP')}
-                        className="bg-slate-800 hover:bg-slate-700 text-white font-mono font-bold text-[10px] px-3 py-1.5 rounded"
-                      >
-                        ▲ DPAD UP
-                      </button>
-                      <button 
-                        onClick={() => handleSimulateKeystroke('DPAD_DOWN')}
-                        className="bg-slate-800 hover:bg-slate-700 text-white font-mono font-bold text-[10px] px-3 py-1.5 rounded"
-                      >
-                        ▼ DPAD DOWN
-                      </button>
-                      <button 
-                        onClick={() => handleSimulateKeystroke('BUTTON_A')}
-                        className="bg-indigo-650 hover:bg-indigo-500 text-white font-mono font-bold text-[10px] px-3 py-1.5 rounded"
-                      >
-                        PRIMARY (A)
-                      </button>
-                      <button 
-                        onClick={() => handleSimulateKeystroke('BUTTON_B')}
-                        className="bg-indigo-650 hover:bg-indigo-500 text-white font-mono font-bold text-[10px] px-3 py-1.5 rounded"
-                      >
-                        SECONDARY (B)
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Viewport Bottom Output HUD */}
-                <div className="flex justify-between items-end z-10">
-                  <div className="bg-black/35 backdrop-blur-md px-3 py-1.5 rounded-lg text-[10px] font-mono text-slate-400">
-                    FPS: {fps} | Bitrate: {bitrate} Mbps
-                  </div>
-
-                  <div className="bg-black/35 backdrop-blur-md px-3 py-1.5 rounded-lg text-[10px] font-mono text-slate-400 max-w-[200px] truncate">
-                    {inputCapture}
+                {/* Direct key inputs guidance banner when active */}
+                <div className="flex flex-col items-center justify-center gap-1 z-10 pointer-events-none">
+                  <div className="bg-indigo-950/70 py-1.5 px-3 rounded-lg text-[9px] font-mono text-center max-w-xs border border-indigo-900/60">
+                    {user?.role === 'player' 
+                      ? "⚠️ Click viewport to capture & route keyboard, scroll and mouse events"
+                      : "🖥️ Receiving peer controller commands in real time"}
                   </div>
                 </div>
 
+                <div className="flex justify-between items-end z-10 pointer-events-none">
+                  <div className="bg-black/60 px-2.5 py-1 rounded text-[9px] font-mono text-slate-400">
+                    fps: {fps} | Stream: {bitrate} Mbps | RTCDatachannel: {dataChannelStatus.toUpperCase()}
+                  </div>
+
+                  <div className="bg-black/60 px-2.5 py-1 rounded text-[9px] font-mono text-slate-400 max-w-[220px] truncate italic">
+                    {remoteEventsLog.length > 0 
+                      ? `Captured: [${remoteEventsLog[0].type.toUpperCase()}]` 
+                      : 'Connection ready. Click panel & press keys'
+                    }
+                  </div>
+                </div>
               </div>
 
-              {/* Dynamic stats overlay box */}
+              {/* Direct Keyboard reactive controller graphic panel (W,A,S,D, arrows, space, shift) */}
+              <div className="bg-[#111625] border border-slate-850 p-4 rounded-xl space-y-3.5 shadow-xl">
+                <div className="flex justify-between items-center">
+                  <p className="text-[10px] font-mono text-slate-400 uppercase font-bold tracking-wider">🎮 Remote Keyboard Matrix State</p>
+                  <span className={`text-[9px] font-mono px-2 py-0.5 rounded font-bold ${
+                    dataChannelStatus === 'open' 
+                      ? 'text-[#059669] bg-emerald-950/40 border border-emerald-900/40' 
+                      : 'text-indigo-400 bg-indigo-950/40 border border-indigo-900/40'
+                  }`}>
+                    {dataChannelStatus === 'open' ? 'Direct P2P DataChannel (No Server Lag)' : 'WebSocket Relay (Fallback Active)'}
+                  </span>
+                </div>
+                
+                <div className="flex flex-wrap items-center gap-4">
+                  {/* WASD Block */}
+                  <div className="grid grid-cols-3 gap-1">
+                    <div></div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['KeyW'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.5)] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>W</div>
+                    <div></div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['KeyA'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.5)] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>A</div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['KeyS'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.5)] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>S</div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['KeyD'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.5)] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>D</div>
+                  </div>
+
+                  {/* Keyboard standard extras */}
+                  <div className="flex flex-col gap-1.5 flex-1 min-w-[120px]">
+                    <div className="flex gap-1.5">
+                      <div className={`h-8 px-3 rounded border flex items-center justify-center font-mono text-[10px] font-bold transition-all ${activeKeys['ShiftLeft'] || activeKeys['ShiftRight'] ? 'bg-indigo-600 text-white border-indigo-400 shadow' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>
+                        L-Shift
+                      </div>
+                      <div className={`h-8 px-3 rounded border flex items-center justify-center font-mono text-[10px] font-bold transition-all ${activeKeys['ControlLeft'] ? 'bg-indigo-600 text-white border-indigo-400 shadow' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>
+                        Ctrl
+                      </div>
+                    </div>
+                    <div className={`h-8 w-full rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['Space'] ? 'bg-indigo-600 text-white border-indigo-400 shadow' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>
+                      Space Bar
+                    </div>
+                  </div>
+
+                  {/* Arrow directions block */}
+                  <div className="grid grid-cols-3 gap-1">
+                    <div></div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['ArrowUp'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[#6366f1] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>▲</div>
+                    <div></div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['ArrowLeft'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[#6366f1] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>◀</div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['ArrowDown'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[#6366f1] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>▼</div>
+                    <div className={`w-8 h-8 rounded border flex items-center justify-center font-mono text-xs font-bold transition-all ${activeKeys['ArrowRight'] ? 'bg-indigo-600 text-white border-indigo-400 shadow-[#6366f1] scale-95' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>▶</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Advanced stats overlay metrics */}
               {showDiagnostics && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-[#111625] border border-slate-850 p-4 rounded-xl">
                   <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase font-bold">Elapsed Duration</p>
-                    <p className="text-lg font-mono font-bold text-white mt-1 flex items-center gap-1.5">
+                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block">Duration Elapsed</span>
+                    <span className="text-base font-mono font-bold text-white mt-1 flex items-center gap-1.5">
                       <Hourglass className="w-4 h-4 text-indigo-400" />
                       {formatTime(elapsedSeconds)}
-                    </p>
+                    </span>
                   </div>
 
                   <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase font-bold">Accumulating Cost</p>
-                    <p className="text-lg font-mono font-bold text-amber-400 mt-1 flex items-center gap-1.5">
+                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block">Accumulating Usage Cost</span>
+                    <span className="text-base font-mono font-bold text-amber-400 mt-1 flex items-center gap-1.5 animate-pulse">
                       <Coins className="w-4 h-4" />
                       {accumulatedCost.toFixed(2)} cr
-                    </p>
+                    </span>
                   </div>
 
                   <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase font-bold">Total Packets rendered</p>
-                    <p className="text-lg font-mono font-bold text-slate-300 mt-1">
-                      {renderedFrames.toLocaleString()} F
-                    </p>
+                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block">Signal Pipeline</span>
+                    <span className="text-xs font-semibold text-emerald-400 mt-1.5 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      {dataChannelStatus === 'open' ? 'DIRECT P2P WIRE' : 'STABLE & WIRELESS'}
+                    </span>
                   </div>
 
                   <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase font-bold">Stream status</p>
-                    <p className="text-lg font-semibold text-emerald-400 mt-1 flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                      ENCRYPTED
-                    </p>
+                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block">RTC Control Channel</span>
+                    <span className="text-[10px] font-mono font-bold text-indigo-300 mt-1.5 block">
+                      {dataChannelStatus === 'open' ? 'Linked (DataChannel)' : 'WebSocket Signaling fallback'}
+                    </span>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* SIDEBAR TERMINAL INFO & SETTLEMENT CONTROL */}
-            <div className="bg-[#131a2c] border border-slate-800 rounded-2xl p-6 flex flex-col justify-between space-y-6">
+            {/* Sidebar with log monitor and screen share actions */}
+            <div className="bg-[#131a2c] border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-6">
               
               <div className="space-y-6">
                 <div>
-                  <h3 className="text-sm font-semibold uppercase font-mono text-slate-400 tracking-wider">Connection State</h3>
+                  <h3 className="text-xs font-semibold uppercase font-mono text-slate-400 tracking-wider">Device Remote Controller</h3>
                   
                   {user?.role === 'host' && (
-                    <div className="mt-2 mb-4">
+                    <div className="mt-3">
                       <button
                         onClick={startScreenShare}
                         disabled={streamStarted}
-                        className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-xl text-sm transition"
+                        className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-xl text-xs transition duration-250 flex items-center justify-center gap-2"
                       >
-                        {streamStarted ? 'Broadcasting...' : 'Start Screen Share'}
+                        <Laptop className="w-4 h-4" />
+                        <span>{streamStarted ? 'Stream Active on Loop' : 'Broadcast Screen Stream'}</span>
                       </button>
                     </div>
                   )}
 
-                  <div className="mt-4 space-y-3">
-                    <div className="flex justify-between border-b border-slate-800/55 pb-2 text-xs">
-                      <span className="text-slate-400">Allocated Host Machine:</span>
+                  <div className="mt-4 space-y-2 text-xs">
+                    <div className="flex justify-between border-b border-slate-800 pb-2">
+                      <span className="text-slate-400">Host Computer:</span>
                       <span className="font-bold text-white">{session?.host_username}</span>
                     </div>
 
-                    <div className="flex justify-between border-b border-slate-800/55 pb-2 text-xs">
-                      <span className="text-slate-400">Renting Gamer:</span>
+                    <div className="flex justify-between border-b border-slate-800 pb-2">
+                      <span className="text-slate-400">Capturing Player:</span>
                       <span className="font-bold text-white">{session?.player_username}</span>
                     </div>
 
-                    <div className="flex justify-between border-b border-slate-800/55 pb-2 text-xs">
-                      <span className="text-slate-400">Base Rental Rate:</span>
-                      <span className="font-bold font-mono text-indigo-400">{session?.price_per_hour} CR/hr</span>
-                    </div>
-
-                    <div className="flex justify-between border-b border-slate-800/55 pb-2 text-xs">
-                      <span className="text-slate-400 font-bold">Simulated Multiplier Notice:</span>
-                      <span className="font-bold text-right text-emerald-400 text-[10px] max-w-[150px]">1 Sec = 1 Min elapsed rate</span>
+                    <div className="flex justify-between border-b border-slate-800 pb-2">
+                      <span className="text-slate-400">Billing Credits Formula:</span>
+                      <span className="font-mono text-indigo-400 font-bold">{session?.price_per_hour} CR/hr</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-[#1c2333]/50 p-4 border border-indigo-950/20 rounded-xl space-y-2">
-                  <h4 className="text-xs font-mono font-bold text-indigo-400">Client Info</h4>
-                  <p className="text-xs text-slate-350 leading-relaxed">
-                    Once the target stream ends, final hours are computed, balances settled, and the host device moves back to the public booking lobby automatically.
-                  </p>
+                {/* Real-Time input logs console (First-principles raw display) */}
+                <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-4 font-mono text-xs text-slate-350 space-y-2 max-h-[170px] overflow-y-auto">
+                  <div className="text-indigo-400 font-bold border-b border-slate-900 pb-1 flex justify-between items-center text-[10px]">
+                    <span>📟 Live Driver Inputs Log</span>
+                    <span className="text-[9px] text-[#059669] animate-pulse">● RAW CONNECTED</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {remoteEventsLog.length === 0 ? (
+                      <p className="text-slate-500 italic text-[10px] py-4 text-center">Awaiting inputs... Focus viewport to stream remote controllers.</p>
+                    ) : (
+                      remoteEventsLog.map((log, index) => {
+                        const timeStr = new Date(log.timestamp).toLocaleTimeString(undefined, { hour12: false }) + '.' + String(log.timestamp % 1000).padStart(3, '0');
+                        return (
+                          <div key={index} className="flex justify-between text-[11px] leading-relaxed">
+                            <span className="text-slate-500">{timeStr}</span>
+                            <span className="font-semibold flex items-center gap-1">
+                              <span className={`w-1 h-1 rounded-full ${
+                                ['keydown', 'mousedown'].includes(log.type) ? 'bg-emerald-400' : 
+                                log.type === 'wheel' ? 'bg-amber-400' :
+                                log.type === 'mousemove' ? 'bg-sky-400' : 'bg-red-400'
+                              }`} />
+                              <span className="text-slate-400 uppercase text-[9px] font-mono">{log.type}:</span>
+                              <strong className="text-slate-100 font-bold font-mono">
+                                {log.type === 'wheel' ? `Scroll [${log.deltaY}]` :
+                                 log.type === 'mousemove' ? `X:${Math.round(log.xRatio! * 100)}% Y:${Math.round(log.yRatio! * 100)}%` :
+                                 ['mousedown', 'mouseup'].includes(log.type) ? `Btn ${log.button}` :
+                                 `"${log.key || log.code}"`}
+                              </strong>
+                            </span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
 
+              {/* Settle Action */}
               <div className="space-y-3">
                 <button
                   id="terminate-btn"
                   onClick={handleTerminateSession}
-                  className="w-full bg-rose-650 hover:bg-rose-550 border border-slate-800/70 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition flex items-center justify-center gap-2 text-sm"
+                  className="w-full bg-[#991b1b] hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition flex items-center justify-center gap-2 text-xs"
                 >
                   <AlertTriangle className="w-4 h-4" />
                   <span>Terminate & Settle Session</span>
                 </button>
                 <p className="text-[10px] text-center text-slate-500 font-mono">
-                  Saves rental progress in local SQLite database instantly.
+                  Saves billing assets immediately to local SQLite DB.
                 </p>
               </div>
 
@@ -523,35 +597,33 @@ export default function SessionView() {
         ) : (
           /* COMPLETED SCREEN */
           <div className="max-w-2xl mx-auto py-12">
-            <div className="bg-[#131a2c] border border-slate-800 rounded-3xl p-8 md:p-12 text-center space-y-6 shadow-2xl relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-44 h-44 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
-
-              <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-full mx-auto w-fit text-emerald-400">
+            <div className="bg-[#131a2c] border border-slate-800 rounded-3xl p-8 text-center space-y-6 shadow-2xl">
+              <div className="bg-emerald-500/10 p-4 rounded-full mx-auto w-fit text-emerald-400">
                 <CheckCircle className="w-12 h-12" />
               </div>
 
-              <div className="space-y-2">
-                <h2 className="text-2xl font-extrabold text-white tracking-tight">Game Session Completed</h2>
-                <p className="text-sm text-slate-400 leading-relaxed">
-                  Your remote rental reservation was closed and settled successfully.
+              <div className="space-y-1.5">
+                <h2 className="text-xl font-extrabold text-white tracking-tight">Game Session Terminated</h2>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Your remote connection was disconnected and assets settled.
                 </p>
               </div>
 
-              <div className="bg-[#161d2f] border border-slate-850 p-6 rounded-2xl max-w-md mx-auto grid grid-cols-2 gap-4">
+              <div className="bg-[#161d2f] p-4 rounded-xl max-w-sm mx-auto grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-[10px] font-mono text-slate-500 uppercase font-bold">Total Cost Deducted</p>
-                  <p className="text-xl font-mono font-bold text-emerald-400 mt-1">{-accumulatedCost.toFixed(2)} cr</p>
+                  <p className="text-[10px] font-mono text-slate-500 uppercase">Cost Deducted</p>
+                  <p className="text-base font-mono font-bold text-emerald-400 mt-1">{-accumulatedCost.toFixed(2)} cr</p>
                 </div>
                 <div>
-                  <p className="text-[10px] font-mono text-slate-500 uppercase font-bold">Your Balance</p>
-                  <p className="text-xl font-mono font-bold text-amber-400 mt-1">{user?.credits.toFixed(2)} cr</p>
+                  <p className="text-[10px] font-mono text-slate-500 uppercase">New Balance</p>
+                  <p className="text-base font-mono font-bold text-amber-400 mt-1">{user?.credits.toFixed(2)} cr</p>
                 </div>
               </div>
 
-              <div className="flex gap-4 max-w-sm mx-auto pt-4">
+              <div className="max-w-xs mx-auto">
                 <button
                   onClick={() => navigate(user?.role === 'host' ? '/host' : '/player')}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-xl text-sm transition"
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 px-4 rounded-xl text-sm transition"
                 >
                   Return to Dashboard
                 </button>

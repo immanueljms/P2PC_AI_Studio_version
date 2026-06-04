@@ -465,9 +465,9 @@ async function startServer() {
         ws.on('message', (message) => {
           try {
             const data = JSON.parse(message.toString());
-            if (data.type === 'SIGNALING' && data.targetId) {
+            if (data.targetId) {
               wsManager.sendToUser(data.targetId, {
-                type: 'SIGNALING',
+                type: data.type,
                 senderId: userId,
                 payload: data.payload
               });
