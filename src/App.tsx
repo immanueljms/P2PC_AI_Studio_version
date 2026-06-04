@@ -1,70 +1,47 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import Navbar from './components/Navbar';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import HostDashboard from './pages/HostDashboard';
-import BrowseHosts from './pages/BrowseHosts';
-import SessionView from './pages/SessionView';
-
-const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, loading } = useAuth();
-  
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#0b0f19] flex flex-col items-center justify-center gap-4 text-slate-400">
-        <div className="animate-spin border-2 border-indigo-500 border-t-transparent w-8 h-8 rounded-full"></div>
-        <p className="text-sm font-mono leading-none">Authorizing Pipeline Session...</p>
-      </div>
-    );
-  }
-  
-  return user ? <>{children}</> : <Navigate to="/login" replace />;
-};
-
-const RootRedirect = () => {
-  const { user, loading } = useAuth();
-  
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#0b0f19] flex flex-col items-center justify-center gap-4 text-slate-400">
-        <div className="animate-spin border-2 border-indigo-500 border-t-transparent w-8 h-8 rounded-full"></div>
-        <p className="text-sm font-mono leading-none font-bold">Matching Credentials...</p>
-      </div>
-    );
-  }
-  
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
-  
-  return user.role === 'host' ? <Navigate to="/host" replace /> : <Navigate to="/player" replace />;
-};
+import { Download, Monitor, Server } from 'lucide-react';
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <div className="min-h-screen bg-[#0b0f19] antialiased">
-          <Navbar />
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            
-            {/* Private user dash entries */}
-            <Route path="/host" element={<PrivateRoute><HostDashboard /></PrivateRoute>} />
-            <Route path="/player" element={<PrivateRoute><BrowseHosts /></PrivateRoute>} />
-            <Route path="/session/:id" element={<PrivateRoute><SessionView /></PrivateRoute>} />
-            
-            {/* Landing index routing */}
-            <Route path="/" element={<RootRedirect />} />
-            
-            {/* Fallback navigation catcher */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+    <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 font-sans">
+      <div className="max-w-xl text-center space-y-6 bg-slate-900 p-8 rounded-2xl border border-slate-800 shadow-2xl">
+        <div className="flex justify-center mb-4">
+          <Monitor className="w-16 h-16 text-emerald-500" />
         </div>
-      </BrowserRouter>
-    </AuthProvider>
+        <h1 className="text-3xl font-bold tracking-tight">Project Architected for Native C++</h1>
+        <p className="text-slate-400 text-sm leading-relaxed">
+          P2PC has been restructured to support the requested native Windows runtime architecture 
+          (C++, DirectX 11, DXGI, FFmpeg HW-encoding, libwebrtc, and Go Signaling).
+        </p>
+        
+        <div className="bg-slate-950 p-4 rounded-xl text-left border border-slate-850 space-y-3">
+          <div className="flex items-start gap-3">
+            <Server className="w-5 h-5 text-indigo-400 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Go Signaling Server</p>
+              <p className="text-xs text-slate-500">Gorilla WebSockets & Pion structure built in <span className="font-mono text-emerald-400/70">/native/signaling</span></p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <Monitor className="w-5 h-5 text-rose-400 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-slate-200">C++ / Qt6 Win32 Client</p>
+              <p className="text-xs text-slate-500">DXGI Duplication, FFmpeg Encoders, & WebRTC Native build setup in <span className="font-mono text-emerald-400/70">/native/desktop</span></p>
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-slate-800/50">
+          <p className="text-sm text-slate-300 mb-4">
+            A web browser sandbox cannot compile or execute native DirectX/Win32 C++ code. You must export the source.
+          </p>
+          <div className="inline-flex items-center gap-2 bg-indigo-500/10 text-indigo-400 px-4 py-2 rounded-lg text-sm font-semibold">
+            <Download className="w-4 h-4" />
+            Use the Settings menu to Export to GitHub or ZIP.
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
+
