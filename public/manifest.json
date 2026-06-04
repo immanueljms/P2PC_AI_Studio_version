@@ -1,0 +1,21 @@
+{
+  "name": "P2PC Cloud Gaming",
+  "short_name": "P2PC",
+  "description": "Peer-to-Peer GPU Cloud Gaming Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/vite.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}

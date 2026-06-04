@@ -1,0 +1,6 @@
+{
+  "name": "P2PC",
+  "description": "A decentralized peer-to-peer cloud gaming platform where hosts rent out their GPU power to players who want to stream and play games remotely.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
